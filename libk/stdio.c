@@ -15,12 +15,22 @@ typedef struct {
     size_t len;
 } sink_t;
 
+static void (*putchar_hook)(char c) = 0;
+
+void stdio_set_putchar_hook(void (*fn)(char c)) {
+    putchar_hook = fn;
+}
+
 static void sink_putc(sink_t *s, char c) {
     if (s->buf) {
         if (s->len + 1 < s->cap) s->buf[s->len] = c;
     } else {
-        vga_putchar(c);
-        serial_putc(c);
+        if (putchar_hook) {
+            putchar_hook(c);
+        } else {
+            vga_putchar(c);
+            serial_putc(c);
+        }
     }
     s->len++;
 }

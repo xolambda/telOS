@@ -18,20 +18,25 @@ typedef struct task {
     void    *stack;
     uint32_t stack_size;
     char     name[32];
+    int      id;
+    int      is_detached;
 
     int state;
     struct task *next;
 } task_t;
 
-void task_init(void);
-task_t *ktask_create(void (*fn)(void), const char *name);
-task_t *ktask_spawn_detached(void (*fn)(void), const char *name);
-void task_switch(task_t *from, task_t *to);
-task_t *task_current(void);
-void task_wait(task_t *t);
-void task_yield(void);
-void schedule(void);
-void task_exit(void) __attribute__((noreturn));
-int task_count(void);
+void     task_init(void);
+task_t  *ktask_create(void (*fn)(void), const char *name);
+task_t  *ktask_spawn_detached(void (*fn)(void), const char *name);
+void     task_switch(task_t *from, task_t *to);
+task_t  *task_current(void);
+void     task_wait(task_t *t);
+void     task_yield(void);
+void     schedule(void);
+void     task_exit(void) __attribute__((noreturn));
+int      task_count(void);
+void     task_iterate(void (*fn)(task_t *));
+task_t  *task_find_by_name(const char *name);
+int      task_kill(task_t *t);
 
 #endif

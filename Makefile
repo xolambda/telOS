@@ -20,7 +20,8 @@ OBJS = boot/boot.o \
        kernel/user_prog.o \
        kernel/task.o \
        libk/string.o \
-       libk/stdio.o
+       libk/stdio.o \
+       kernel/ramfs.o \
 
 all: telos.bin
 

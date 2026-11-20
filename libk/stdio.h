@@ -9,4 +9,6 @@ int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap);
 int sprintf(char *buf, const char *fmt, ...);
 int snprintf(char *buf, size_t n, const char *fmt, ...);
 
+void stdio_set_putchar_hook(void (*fn)(char c));
+
 #endif

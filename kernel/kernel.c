@@ -14,10 +14,12 @@
 #include "syscall.h"
 #include "usermode.h"
 #include "task.h"
+#include "ramfs.h"
 #include "version.h"
 
 #define TELOS_PROMPT "> "
 #define LINE_MAX 256
+#define BG_BUF_SIZE 1024
 
 extern char __kernel_end;
 extern char stack_top;
@@ -27,6 +29,43 @@ static uint32_t mb_magic = 0;
 
 static char history[KBD_HISTORY_SIZE][KBD_HISTORY_MAX];
 static int  history_count = 0;
+
+static char bg_buf[BG_BUF_SIZE];
+static int  bg_head = 0;
+static int  bg_tail = 0;
+
+static void bg_push(char c) {
+    int next = (bg_head + 1) % BG_BUF_SIZE;
+    if (next != bg_tail) {
+        bg_buf[bg_head] = c;
+        bg_head = next;
+    }
+}
+
+static char bg_pop(void) {
+    if (bg_head == bg_tail) return 0;
+    char c = bg_buf[bg_tail];
+    bg_tail = (bg_tail + 1) % BG_BUF_SIZE;
+    return c;
+}
+
+static void bg_flush(void) {
+    char c;
+    while ((c = bg_pop()) != 0) {
+        vga_putchar(c);
+        serial_putc(c);
+    }
+}
+
+static void kernel_putchar(char c) {
+    task_t *cur = task_current();
+    if (cur && cur->is_detached && cur->state == TASK_STATE_RUNNING) {
+        bg_push(c);
+    } else {
+        vga_putchar(c);
+        serial_putc(c);
+    }
+}
 
 static void shell_prompt(void) {
     vga_puts(TELOS_PROMPT);
@@ -95,8 +134,16 @@ static void do_sysfetch(void);
 static void do_spawn(void);
 static void do_spawn_detached(void);
 static void do_yield(void);
+static void do_ps(void);
+static void do_kill(const char *name);
 static void do_hex(const char *arg);
 static void do_sleep(const char *arg);
+static void do_ls(void);
+static void do_touch(const char *name);
+static void do_rm(const char *name);
+static void do_cat(const char *name);
+static void do_write(const char *args);
+static void do_spawn_file(const char *name);
 
 static void handle_command(char *line) {
     int len = (int)strlen(line);
@@ -139,10 +186,26 @@ static void handle_command(char *line) {
         do_spawn_detached();
     } else if (strcmp(line, "yield") == 0) {
         do_yield();
+    } else if (strcmp(line, "ps") == 0) {
+        do_ps();
     } else if (strcmp(line, "panic") == 0) {
         do_panic();
     } else if (strcmp(line, "sysfetch") == 0) {
         do_sysfetch();
+    } else if (strcmp(line, "ls") == 0) {
+        do_ls();
+    } else if (strncmp(line, "kill ", 5) == 0) {
+        do_kill(line + 5);
+    } else if (strncmp(line, "touch ", 6) == 0) {
+        do_touch(line + 6);
+    } else if (strncmp(line, "rm ", 3) == 0) {
+        do_rm(line + 3);
+    } else if (strncmp(line, "cat ", 4) == 0) {
+        do_cat(line + 4);
+    } else if (strncmp(line, "write ", 6) == 0) {
+        do_write(line + 6);
+    } else if (strncmp(line, "spawn_file ", 11) == 0) {
+        do_spawn_file(line + 11);
     } else if (strncmp(line, "echo ", 5) == 0) {
         kprintf("%s\n", line + 5);
     } else if (strncmp(line, "hex ", 4) == 0) {
@@ -164,6 +227,8 @@ static void shell_run(void) {
     shell_prompt();
 
     for (;;) {
+        bg_flush();
+
         struct kbd_event ev = keyboard_get_event();
         if (ev.type == KBD_EV_NONE) {
             __asm__ volatile ("hlt");
@@ -285,10 +350,20 @@ static void do_help(void) {
     kprintf("  usermode       jump to ring 3 and back\n");
     kprintf("  spawn          create + wait for a kernel task\n");
     kprintf("  spawn_detached create a task, return to shell\n");
+    kprintf("  spawn_file <f> run a file as a detached task\n");
     kprintf("  yield          yield to next ready task\n");
+    kprintf("  ps             list running tasks\n");
+    kprintf("  kill <name>    terminate a task by name\n");
     kprintf("  sysfetch       system info + ASCII art\n");
     kprintf("  panic          trigger a test panic\n");
     kprintf("  about          show version info\n");
+    kprintf("\n");
+    kprintf("filesystem:\n");
+    kprintf("  ls             list files\n");
+    kprintf("  touch <file>   create an empty file\n");
+    kprintf("  rm <file>      delete a file\n");
+    kprintf("  cat <file>     print file contents\n");
+    kprintf("  write <f> <s>  write string to file\n");
     kprintf("\n  line editing: arrows, home/end, delete, up/down history\n");
 }
 
@@ -508,6 +583,144 @@ static void do_yield(void) {
     kprintf("resumed\n");
 }
 
+static void ps_print_one(task_t *t) {
+    const char *state;
+    switch (t->state) {
+    case TASK_STATE_RUNNING: state = "running"; break;
+    case TASK_STATE_READY:   state = "ready";   break;
+    case TASK_STATE_DEAD:    state = "dead";    break;
+    default:                 state = "?";       break;
+    }
+    kprintf("  %2d  %-16s %-8s esp=0x%x\n", t->id, t->name, state, t->esp);
+}
+
+static void do_ps(void) {
+    kprintf("id  name             state    esp\n");
+    task_iterate(ps_print_one);
+}
+
+static void do_kill(const char *name) {
+    task_t *t = task_find_by_name(name);
+    if (!t) {
+        kprintf("no such task: %s\n", name);
+        return;
+    }
+    if (task_kill(t)) {
+        kprintf("killed %s\n", name);
+    } else {
+        kprintf("failed to kill %s\n", name);
+    }
+}
+
+static void do_ls(void) {
+    int n = ramfs_count();
+    if (n == 0) {
+        kprintf("(empty)\n");
+        return;
+    }
+    kprintf("name                             size\n");
+    for (int i = 0; i < n; i++) {
+        ramfs_file_t *f = ramfs_get(i);
+        if (f) {
+            kprintf("  %-30s %u\n", f->name, (uint32_t)f->size);
+        }
+    }
+}
+
+static void do_touch(const char *name) {
+    if (ramfs_create(name) != 0) {
+        kprintf("failed to create %s\n", name);
+        return;
+    }
+    kprintf("created %s\n", name);
+}
+
+static void do_rm(const char *name) {
+    if (ramfs_remove(name) != 0) {
+        kprintf("no such file: %s\n", name);
+        return;
+    }
+    kprintf("removed %s\n", name);
+}
+
+static void do_cat(const char *name) {
+    int size = ramfs_size(name);
+    if (size < 0) {
+        kprintf("no such file: %s\n", name);
+        return;
+    }
+    if (size == 0) {
+        kprintf("(empty)\n");
+        return;
+    }
+    char *buf = (char *)kmalloc(size + 1);
+    if (!buf) { kprintf("oom\n"); return; }
+    ramfs_read(name, buf, size);
+    buf[size] = '\0';
+    kprintf("%s", buf);
+    if (buf[size - 1] != '\n') kprintf("\n");
+    kfree(buf);
+}
+
+static void do_write(const char *args) {
+    const char *name = args;
+    while (*args && *args != ' ') args++;
+    if (*args != ' ') {
+        kprintf("usage: write <file> <text>\n");
+        return;
+    }
+    int name_len = (int)(args - name);
+    char file[RAMFS_MAX_NAME];
+    if (name_len >= RAMFS_MAX_NAME) name_len = RAMFS_MAX_NAME - 1;
+    memcpy(file, name, name_len);
+    file[name_len] = '\0';
+
+    const char *text = args + 1;
+
+    if (!ramfs_exists(file)) {
+        if (ramfs_create(file) != 0) {
+            kprintf("failed to create %s\n", file);
+            return;
+        }
+    }
+
+    int n = ramfs_write(file, text, strlen(text));
+    if (n < 0) {
+        kprintf("write failed\n");
+        return;
+    }
+    kprintf("wrote %d bytes to %s\n", n, file);
+}
+
+static void do_spawn_file(const char *name) {
+    int size = ramfs_size(name);
+    if (size < 0) {
+        kprintf("no such file: %s\n", name);
+        return;
+    }
+    kprintf("loading %s (%d bytes) as task\n", name, size);
+
+    char *buf = (char *)kmalloc(size + 1);
+    if (!buf) { kprintf("oom\n"); return; }
+    ramfs_read(name, buf, size);
+    buf[size] = '\0';
+
+    kprintf("contents:\n---\n");
+    kprintf("%s", buf);
+    if (size > 0 && buf[size - 1] != '\n') kprintf("\n");
+    kprintf("---\n");
+
+    kfree(buf);
+
+    task_t *t = ktask_spawn_detached(detached_task, name);
+    if (!t) {
+        kprintf("failed to spawn task\n");
+        return;
+    }
+    kprintf("task %s created (runs the demo task)\n", name);
+    task_yield();
+}
+
 static void do_panic(void) { panic("panic triggered by shell"); }
 
 static void do_sysfetch(void) {
@@ -548,19 +761,23 @@ static void do_sysfetch(void) {
         snprintf(mem_buf, sizeof(mem_buf), "unknown");
     }
 
-    const char *labels[6] = {
-        "OS", "Uptime", "Memory", "Heap", "Tasks", "Privilege"
+    char fs_buf[64];
+    snprintf(fs_buf, sizeof(fs_buf), "%d files", ramfs_count());
+
+    const char *labels[7] = {
+        "OS", "Uptime", "Memory", "Heap", "Tasks", "FS", "Privilege"
     };
 
-    char values[6][80];
+    char values[7][80];
     snprintf(values[0], sizeof(values[0]), "%s %s", TELOS_NAME, TELOS_VERSION);
     snprintf(values[1], sizeof(values[1]), "%s", uptime_buf);
     snprintf(values[2], sizeof(values[2]), "%s", mem_buf);
     snprintf(values[3], sizeof(values[3]), "%s", heap_buf);
     snprintf(values[4], sizeof(values[4]), "%d", task_count());
-    snprintf(values[5], sizeof(values[5]), "ring 0 / ring 3");
+    snprintf(values[5], sizeof(values[5]), "%s", fs_buf);
+    snprintf(values[6], sizeof(values[6]), "ring 0 / ring 3");
 
-    int info_lines = 6;
+    int info_lines = 7;
     int info_offset = (art_lines - info_lines) / 2;
 
     for (int i = 0; i < art_lines; i++) {
@@ -647,6 +864,9 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
     syscall_init();
     gdt_set_kernel_stack((uint32_t)&stack_top);
     task_init();
+    ramfs_init();
+
+    stdio_set_putchar_hook(kernel_putchar);
 
     kprintf("heap: base=0x%x cap=%u bytes\n\n",
             (uint32_t)(uintptr_t)heap_start(),
@@ -656,4 +876,3 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
 
     shell_run();
 }
-
