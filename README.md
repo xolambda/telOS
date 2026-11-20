@@ -141,7 +141,7 @@ keyboard → IRQ1 → irq1_c_handler → keyboard_handle_scancode
         → kprintf → vga_putchar + serial_putc
 ```
 
-The IRQ handler does the *minimum*: read the scancode, translate it, push it into a ring buffer, send EOI. All display work happens in the shell loop, at process (well — kernel thread) context, with interrupts handled safely. This is the right structure, and it's the one you'll want to preserve when you add scheduling.
+The IRQ handler does the *minimum*: read the scancode, translate it, push it into a ring buffer, send EOI. All display work happens in the shell loop, at process (kernel thread) context, with interrupts handled safely. This is the right structure, and it's the one you'll want to preserve when you add scheduling.
 
 ---
 
