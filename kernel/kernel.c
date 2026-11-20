@@ -93,6 +93,7 @@ static void do_usermode(void);
 static void do_panic(void);
 static void do_sysfetch(void);
 static void do_spawn(void);
+static void do_spawn_detached(void);
 static void do_yield(void);
 static void do_hex(const char *arg);
 static void do_sleep(const char *arg);
@@ -134,6 +135,8 @@ static void handle_command(char *line) {
         do_usermode();
     } else if (strcmp(line, "spawn") == 0) {
         do_spawn();
+    } else if (strcmp(line, "spawn_detached") == 0) {
+        do_spawn_detached();
     } else if (strcmp(line, "yield") == 0) {
         do_yield();
     } else if (strcmp(line, "panic") == 0) {
@@ -164,6 +167,7 @@ static void shell_run(void) {
         struct kbd_event ev = keyboard_get_event();
         if (ev.type == KBD_EV_NONE) {
             __asm__ volatile ("hlt");
+            task_yield();
             continue;
         }
 
@@ -255,6 +259,8 @@ static void shell_run(void) {
             browse_index = -1;
             shell_prompt();
         }
+
+        task_yield();
     }
 }
 
@@ -277,7 +283,8 @@ static void do_help(void) {
     kprintf("  heapdump       walk every heap block\n");
     kprintf("  syscall        trigger int 0x80 test\n");
     kprintf("  usermode       jump to ring 3 and back\n");
-    kprintf("  spawn          create + run a kernel task\n");
+    kprintf("  spawn          create + wait for a kernel task\n");
+    kprintf("  spawn_detached create a task, return to shell\n");
     kprintf("  yield          yield to next ready task\n");
     kprintf("  sysfetch       system info + ASCII art\n");
     kprintf("  panic          trigger a test panic\n");
@@ -469,13 +476,30 @@ static void spawned_task(void) {
     kprintf("[spawned] done\n");
 }
 
+static void detached_task(void) {
+    for (int i = 0; i < 5; i++) {
+        kprintf("[detached] iteration %d\n", i);
+        timer_sleep_ms(300);
+    }
+    kprintf("[detached] done\n");
+}
+
 static void do_spawn(void) {
     kprintf("creating task...\n");
     task_t *t = ktask_create(spawned_task, "spawned");
     if (!t) { kprintf("failed to create task\n"); return; }
     kprintf("yielding to new task...\n");
     task_yield();
+    task_wait(t);
     kprintf("returned to shell\n");
+}
+
+static void do_spawn_detached(void) {
+    kprintf("creating detached task...\n");
+    task_t *t = ktask_spawn_detached(detached_task, "detached");
+    if (!t) { kprintf("failed to create task\n"); return; }
+    kprintf("task created, running in background\n");
+    task_yield();
 }
 
 static void do_yield(void) {
@@ -632,3 +656,4 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
 
     shell_run();
 }
+

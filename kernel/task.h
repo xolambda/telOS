@@ -25,8 +25,10 @@ typedef struct task {
 
 void task_init(void);
 task_t *ktask_create(void (*fn)(void), const char *name);
+task_t *ktask_spawn_detached(void (*fn)(void), const char *name);
 void task_switch(task_t *from, task_t *to);
 task_t *task_current(void);
+void task_wait(task_t *t);
 void task_yield(void);
 void schedule(void);
 void task_exit(void) __attribute__((noreturn));

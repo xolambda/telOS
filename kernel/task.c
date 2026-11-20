@@ -1,4 +1,5 @@
 #include "task.h"
+#include "timer.h"
 #include "paging.h"
 #include "heap.h"
 #include "panic.h"
@@ -90,8 +91,14 @@ task_t *ktask_create(void (*fn)(void), const char *name) {
     return t;
 }
 
+task_t *ktask_spawn_detached(void (*fn)(void), const char *name) {
+    return ktask_create(fn, name);
+}
+
 void schedule(void) {
     if (!current) return;
+
+    timer_clear_resched();
 
     if (!ready_head) {
         if (current->state == TASK_STATE_DEAD) {
@@ -120,7 +127,15 @@ void schedule(void) {
 }
 
 void task_yield(void) {
-    schedule();
+    if (ready_head || timer_should_resched()) {
+        schedule();
+    }
+}
+
+void task_wait(task_t *t) {
+    while (t && t->state != TASK_STATE_DEAD) {
+        task_yield();
+    }
 }
 
 void task_switch(task_t *from, task_t *to) {
