@@ -4,7 +4,7 @@
 
 **A tiny 32-bit operating system, written from scratch in C and assembly.**
 
-Boots on bare metal. No libc. No Linux. Just you and the CPU.
+It's bare metal.
 
 [![Platform](https://img.shields.io/badge/platform-x86--32-informational?style=flat-square)](#)
 [![Language](https://img.shields.io/badge/language-C%20%2B%20assembly-blue?style=flat-square)](#)
@@ -21,51 +21,6 @@ Boots on bare metal. No libc. No Linux. Just you and the CPU.
 `telOS` is a hobby operating system. It's small enough to read end-to-end in an afternoon, but complete enough to boot on real hardware (or QEMU), print to the screen, handle keyboard input, keep time, and run with virtual memory turned on.
 
 It is **not** a Unix clone, **not** a teaching OS with a framework, and **not** a Linux distro. Every line of code in `kernel/` and `libk/` was written for this project. There is no standard library, no runtime, and no host operating system underneath.
-
-The entire boot path is:
-
-```
-BIOS → GRUB → boot.S → kernel_main() → shell
-```
-
-telOS v0.5c
-==========
-
-multiboot OK, info at 0x9500
-
-paging ON, dir at 0x10b000
-
-Welcome to telOS. Type 'help'.
-
-> help
-commands:
-  help           show this message
-  clear          clear the screen
-  echo <text>    print text back
-  hex  <number>  print decimal as hex
-  sleep <ms>     sleep for N milliseconds
-  uptime         print time since boot
-  serialtest     write test data to COM1
-  meminfo        multiboot memory summary
-  mmap           dump the memory map
-  pagetables     page directory + table info
-  pgstatus       paging status (CR0/CR3)
-  panic          trigger a test panic
-  about          show version info
-
-> uptime
-uptime: 5230 ms (523 ticks @ 100 Hz)
-
-> pgstatus
-CR0:  0x80000011
-PG:   on
-PE:   on
-CR3:  0x10b000
-dir phys: 0x10b000
-self test: PASS
-```
-
----
 
 ## Features
 
