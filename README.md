@@ -23,9 +23,7 @@ It's bare metal.
 
 It is **not** a Unix clone, **not** a teaching OS with a framework, and **not** a Linux distro. Every line of code in `kernel/` and `libk/` was written for this project. There is no standard library, no runtime, and no host operating system underneath.
 
-```html
 <img src="docs/screenshot.png" width="720" alt="telOS shell with sysfetch">
-```
 
 ## Features
 
