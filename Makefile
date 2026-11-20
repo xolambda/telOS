@@ -1,7 +1,7 @@
 CC      = gcc
 AS      = gcc
 CFLAGS  = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra -fno-pic -fno-pie \
-          -Ilibk -Ikernel
+          -g -Ilibk -Ikernel
 LDFLAGS = -m32 -T linker.ld -ffreestanding -O2 -nostdlib -no-pie -lgcc
 
 OBJS = boot/boot.o \
@@ -18,6 +18,7 @@ OBJS = boot/boot.o \
        kernel/syscall.o \
        kernel/usermode.o \
        kernel/user_prog.o \
+       kernel/task.o \
        libk/string.o \
        libk/stdio.o
 

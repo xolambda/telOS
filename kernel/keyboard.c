@@ -9,6 +9,8 @@ static volatile int evt_head_idx = 0;
 static volatile int evt_tail_idx = 0;
 
 static int ext_prefix = 0;
+static int shift_down = 0;
+static int caps_lock = 0;
 
 static const char kbd_map[128] = {
     0, 27, '1','2','3','4','5','6','7','8','9','0','-','=','\b',
@@ -16,6 +18,17 @@ static const char kbd_map[128] = {
     0,'a','s','d','f','g','h','j','k','l',';','\'','`',
     0,'\\','z','x','c','v','b','n','m',',','.','/',0,'*',0,' ',
 };
+
+static const char kbd_map_shift[128] = {
+    0, 27, '!','@','#','$','%','^','&','*','(',')','_','+','\b',
+    '\t','Q','W','E','R','T','Y','U','I','O','P','{','}','\n',
+    0,'A','S','D','F','G','H','J','K','L',':','"','~',
+    0,'|','Z','X','C','V','B','N','M','<','>','?',0,'*',0,' ',
+};
+
+static int is_letter(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
 
 static void evt_push(struct kbd_event ev) {
     int next = (evt_head_idx + 1) % KBD_BUF_SIZE;
@@ -29,9 +42,17 @@ void keyboard_init(void) {
     kbd_head = kbd_tail = 0;
     evt_head_idx = evt_tail_idx = 0;
     ext_prefix = 0;
+    shift_down = 0;
+    caps_lock = 0;
 }
 
 void keyboard_handle_scancode(unsigned char sc) {
+    if (sc == 0x2A || sc == 0x36) { shift_down = 1; return; }
+    if (sc == 0xAA || sc == 0xB6) { shift_down = 0; return; }
+
+    if (sc == 0x3A) { caps_lock = !caps_lock; return; }
+    if (sc == 0xBA) return;
+
     if (sc == 0xE0) {
         ext_prefix = 1;
         return;
@@ -64,13 +85,21 @@ void keyboard_handle_scancode(unsigned char sc) {
 
     if (release) return;
 
-    char c = kbd_map[key];
+    char base = kbd_map[key];
+    if (!base) return;
+
+    char c;
+    if (is_letter(base)) {
+        c = (shift_down ^ caps_lock) ? kbd_map_shift[key] : base;
+    } else {
+        c = shift_down ? kbd_map_shift[key] : base;
+    }
+
     if (c == 27) {
         struct kbd_event ev = { KBD_EV_ESC, 0 };
         evt_push(ev);
         return;
     }
-    if (!c) return;
 
     struct kbd_event ev = { KBD_EV_CHAR, c };
     evt_push(ev);

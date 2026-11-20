@@ -13,6 +13,7 @@
 #include "heap.h"
 #include "syscall.h"
 #include "usermode.h"
+#include "task.h"
 #include "version.h"
 
 #define TELOS_PROMPT "> "
@@ -91,6 +92,8 @@ static void do_syscall(void);
 static void do_usermode(void);
 static void do_panic(void);
 static void do_sysfetch(void);
+static void do_spawn(void);
+static void do_yield(void);
 static void do_hex(const char *arg);
 static void do_sleep(const char *arg);
 
@@ -129,6 +132,10 @@ static void handle_command(char *line) {
         do_syscall();
     } else if (strcmp(line, "usermode") == 0) {
         do_usermode();
+    } else if (strcmp(line, "spawn") == 0) {
+        do_spawn();
+    } else if (strcmp(line, "yield") == 0) {
+        do_yield();
     } else if (strcmp(line, "panic") == 0) {
         do_panic();
     } else if (strcmp(line, "sysfetch") == 0) {
@@ -270,6 +277,8 @@ static void do_help(void) {
     kprintf("  heapdump       walk every heap block\n");
     kprintf("  syscall        trigger int 0x80 test\n");
     kprintf("  usermode       jump to ring 3 and back\n");
+    kprintf("  spawn          create + run a kernel task\n");
+    kprintf("  yield          yield to next ready task\n");
     kprintf("  sysfetch       system info + ASCII art\n");
     kprintf("  panic          trigger a test panic\n");
     kprintf("  about          show version info\n");
@@ -452,6 +461,29 @@ static void do_usermode(void) {
     kprintf("returned from user mode\n");
 }
 
+static void spawned_task(void) {
+    for (int i = 0; i < 3; i++) {
+        kprintf("[spawned] iteration %d\n", i);
+        timer_sleep_ms(500);
+    }
+    kprintf("[spawned] done\n");
+}
+
+static void do_spawn(void) {
+    kprintf("creating task...\n");
+    task_t *t = ktask_create(spawned_task, "spawned");
+    if (!t) { kprintf("failed to create task\n"); return; }
+    kprintf("yielding to new task...\n");
+    task_yield();
+    kprintf("returned to shell\n");
+}
+
+static void do_yield(void) {
+    kprintf("yielding...\n");
+    task_yield();
+    kprintf("resumed\n");
+}
+
 static void do_panic(void) { panic("panic triggered by shell"); }
 
 static void do_sysfetch(void) {
@@ -466,7 +498,6 @@ static void do_sysfetch(void) {
         "!_____! !_____!",
     };
     int art_lines = 8;
-    /* int art_width = 15;  -- Not rlly necessary*/
 
     uint32_t ms = timer_uptime_ms();
     uint32_t secs = ms / 1000;
@@ -493,18 +524,19 @@ static void do_sysfetch(void) {
         snprintf(mem_buf, sizeof(mem_buf), "unknown");
     }
 
-    const char *labels[5] = {
-        "OS", "Uptime", "Memory", "Heap", "Privilege"
+    const char *labels[6] = {
+        "OS", "Uptime", "Memory", "Heap", "Tasks", "Privilege"
     };
 
-    char values[5][80];
+    char values[6][80];
     snprintf(values[0], sizeof(values[0]), "%s %s", TELOS_NAME, TELOS_VERSION);
     snprintf(values[1], sizeof(values[1]), "%s", uptime_buf);
     snprintf(values[2], sizeof(values[2]), "%s", mem_buf);
     snprintf(values[3], sizeof(values[3]), "%s", heap_buf);
-    snprintf(values[4], sizeof(values[4]), "ring 0 / ring 3");
+    snprintf(values[4], sizeof(values[4]), "%d", task_count());
+    snprintf(values[5], sizeof(values[5]), "ring 0 / ring 3");
 
-    int info_lines = 5;
+    int info_lines = 6;
     int info_offset = (art_lines - info_lines) / 2;
 
     for (int i = 0; i < art_lines; i++) {
@@ -568,7 +600,14 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
     paging_init();
 
     kprintf("%s %s\n", TELOS_NAME, TELOS_VERSION);
-    kprintf("==========\n\n");
+    kprintf("._____. ._____.\n");
+    kprintf("| ._. | | ._. |\n");
+    kprintf("| !_| |_|_|_! |\n");
+    kprintf("!___| |_______!\n");
+    kprintf(".___|_|_| |___.\n");
+    kprintf("| ._____| |_. |\n");
+    kprintf("| !_! | | !_! |\n");
+    kprintf("!_____! !_____!\n\n");
 
     if (magic != MULTIBOOT_BOOTLOADER_MAGIC) {
         kprintf("warning: bad multiboot magic 0x%x\n\n", magic);
@@ -583,6 +622,7 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
     heap_init();
     syscall_init();
     gdt_set_kernel_stack((uint32_t)&stack_top);
+    task_init();
 
     kprintf("heap: base=0x%x cap=%u bytes\n\n",
             (uint32_t)(uintptr_t)heap_start(),
