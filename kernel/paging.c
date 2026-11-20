@@ -98,38 +98,30 @@ int paging_enabled(void) {
 }
 
 int paging_map_user(uint32_t virt, uint32_t phys, int writable) {
-    if (virt & 0xFFF) {
-        serial_puts("[paging_map_user] virt not aligned: ");
-        serial_puthex(virt);
-        serial_puts("\n");
-        return 0;
-    }
-    if (phys & 0xFFF) {
-        serial_puts("[paging_map_user] phys not aligned: ");
-        serial_puthex(phys);
-        serial_puts("\n");
-        return 0;
-    }
+    ASSERT((virt & 0xFFF) == 0);
+    ASSERT((phys & 0xFFF) == 0);
+    ASSERT(virt < 0xC0000000u);
 
     uint32_t dir_index = virt >> 22;
     uint32_t tab_index = (virt >> 12) & 0x3FF;
 
     page_dir_entry_t *pdir = page_directory_ptr();
+    ASSERT(pdir != 0);
+
     page_table_entry_t *ptab;
 
     if (pdir[dir_index] & PAGE_PRESENT) {
         ptab = (page_table_entry_t *)(pdir[dir_index] & 0xFFFFF000);
+        ASSERT(((uintptr_t)ptab & 0xFFF) == 0);
     } else {
         ptab = (page_table_entry_t *)kmalloc_page();
         if (!ptab) {
             serial_puts("[paging_map_user] kmalloc_page failed\n");
             return 0;
         }
+        ASSERT(((uintptr_t)ptab & 0xFFF) == 0);
         for (int i = 0; i < PAGES_PER_TABLE; i++) ptab[i] = 0;
         pdir[dir_index] = (uint32_t)ptab | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
-        serial_puts("[paging_map_user] allocated new page table at ");
-        serial_puthex((uint32_t)ptab);
-        serial_puts("\n");
     }
 
     uint32_t flags = PAGE_PRESENT | PAGE_USER;
@@ -139,6 +131,11 @@ int paging_map_user(uint32_t virt, uint32_t phys, int writable) {
     ptab[tab_index] = (phys & 0xFFFFF000) | flags;
 
     __asm__ volatile ("mov %%cr3, %%eax; mov %%eax, %%cr3" : : : "eax", "memory");
+
+    ASSERT(pdir[dir_index] & PAGE_USER);
+    ASSERT(pdir[dir_index] & PAGE_PRESENT);
+    ASSERT(ptab[tab_index] & PAGE_USER);
+    ASSERT(ptab[tab_index] & PAGE_PRESENT);
 
     serial_puts("[paging_map_user] virt=");
     serial_puthex(virt);

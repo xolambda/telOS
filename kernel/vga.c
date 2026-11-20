@@ -74,3 +74,33 @@ void vga_backspace(void) {
     vga_buffer[cursor_row * VGA_WIDTH + cursor_col] = make_entry(' ', attribute);
     vga_update_cursor();
 }
+
+int vga_get_cursor_row(void) {
+    return (int)cursor_row;
+}
+
+int vga_get_cursor_col(void) {
+    return (int)cursor_col;
+}
+
+void vga_set_cursor(int row, int col) {
+    if (row < 0) row = 0;
+    if (row >= VGA_HEIGHT) row = VGA_HEIGHT - 1;
+    if (col < 0) col = 0;
+    if (col >= VGA_WIDTH) col = VGA_WIDTH - 1;
+    cursor_row = (size_t)row;
+    cursor_col = (size_t)col;
+    vga_update_cursor();
+}
+
+void vga_erase_at(int row, int col) {
+    if (row < 0 || row >= VGA_HEIGHT) return;
+    if (col < 0 || col >= VGA_WIDTH) return;
+    vga_buffer[row * VGA_WIDTH + col] = make_entry(' ', attribute);
+}
+
+void vga_putchar_at(int row, int col, char c) {
+    if (row < 0 || row >= VGA_HEIGHT) return;
+    if (col < 0 || col >= VGA_WIDTH) return;
+    vga_buffer[row * VGA_WIDTH + col] = make_entry(c, attribute);
+}

@@ -20,5 +20,10 @@ void vga_puts(const char *s);
 void vga_clear(void);
 void vga_update_cursor(void);
 void vga_backspace(void);
+int  vga_get_cursor_row(void);
+int  vga_get_cursor_col(void);
+void vga_set_cursor(int row, int col);
+void vga_erase_at(int row, int col);
+void vga_putchar_at(int row, int col, char c);
 
 #endif

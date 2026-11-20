@@ -12,6 +12,10 @@ static int sys_write(const char *msg) {
 }
 
 void syscall_dispatch(struct pusha_regs *regs) {
+    ASSERT(regs != 0);
+    ASSERT(regs->eax >= 1);
+    ASSERT(regs->eax <= 2);
+
     switch (regs->eax) {
     case SYS_WRITE: {
         const char *msg = (const char *)regs->ebx;

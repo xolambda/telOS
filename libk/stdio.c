@@ -6,11 +6,11 @@
 
 typedef __builtin_va_list va_list;
 #define va_start(v, l) __builtin_va_start(v, l)
-#define va_arg(v, t) __builtin_va_arg(v, t)
-#define va_end(v) __builtin_va_end(v)
+#define va_arg(v, t)   __builtin_va_arg(v, t)
+#define va_end(v)      __builtin_va_end(v)
 
 typedef struct {
-    char *buf;
+    char  *buf;
     size_t cap;
     size_t len;
 } sink_t;
@@ -137,12 +137,33 @@ int kprintf(const char *fmt, ...) {
     return (int)s.len;
 }
 
-int ksnprintf(char *buf, size_t n, const char *fmt, ...) {
+int kvsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap) {
     sink_t s = { .buf = buf, .cap = n, .len = 0 };
-    va_list ap;
-    va_start(ap, fmt);
     do_format(&s, fmt, ap);
-    va_end(ap);
     if (n > 0) buf[(s.len < n) ? s.len : n - 1] = '\0';
     return (int)s.len;
+}
+
+int ksnprintf(char *buf, size_t n, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = kvsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+int sprintf(char *buf, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = kvsnprintf(buf, (size_t)-1, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+int snprintf(char *buf, size_t n, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = kvsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
 }

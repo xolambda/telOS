@@ -72,6 +72,10 @@ static void free_list_remove(block_t *b) {
 }
 
 static void split_block(block_t *b, uint32_t want) {
+    ASSERT(want >= BLOCK_OVERHEAD);
+    ASSERT(b->size >= want);
+    ASSERT(b->free == 0);
+
     uint32_t remain = b->size - want;
     if (remain < BLOCK_OVERHEAD + HEAP_ALIGN) return;
 
@@ -86,6 +90,8 @@ static void split_block(block_t *b, uint32_t want) {
 }
 
 static block_t *coalesce(block_t *b) {
+    ASSERT(b->free == 1);
+
     block_t *after = next_block(b);
     if (after && after->free) {
         free_list_remove(after);
@@ -123,24 +129,60 @@ void heap_init(void) {
     used_bytes = 0;
 }
 
-void *kmalloc(size_t size) {
-    if (size == 0) return 0;
+static void *kmalloc_internal(size_t size, int require_page_align) {
+    ASSERT(size > 0);
 
-    uint32_t need = (uint32_t)align_up(size, HEAP_ALIGN);
+    uint32_t align = require_page_align ? PAGE_SIZE : HEAP_ALIGN;
+    uint32_t need  = (uint32_t)align_up(size, align);
     if (need < size) panic("kmalloc: size overflow");
-    if (need < HEAP_ALIGN) need = HEAP_ALIGN;
+    if (need < align) need = align;
 
     block_t *b = free_head;
     while (b) {
-        if (b->size >= need) {
-            if (b->size >= need + BLOCK_OVERHEAD + HEAP_ALIGN) {
-                split_block(b, need + BLOCK_OVERHEAD);
+        uintptr_t hdr = (uintptr_t)b;
+        uintptr_t content = hdr + BLOCK_OVERHEAD;
+        uintptr_t aligned_content = content;
+
+        if (require_page_align) {
+            aligned_content = align_up(content, PAGE_SIZE);
+        }
+
+        uintptr_t pad = aligned_content - content;
+        uint32_t total = need + BLOCK_OVERHEAD + (uint32_t)pad;
+
+        if (b->size >= total) {
+            if (pad > 0) {
+                ASSERT(pad >= BLOCK_OVERHEAD);
+                ASSERT(b->size >= pad + BLOCK_OVERHEAD);
+
+                block_t *slack = b;
+                block_t *real = block_at(hdr + pad);
+                uint32_t remaining = slack->size - (uint32_t)pad;
+                write_header(real, remaining, (uint32_t)pad, 1);
+                slack->size = (uint32_t)pad;
+                slack->free = 1;
+                free_list_push(slack);
+                b = real;
+            } else {
+                free_list_remove(b);
             }
-            free_list_remove(b);
+
             b->free = 0;
-            used_bytes += b->size;
             heap_cur = (uintptr_t)b + BLOCK_OVERHEAD;
-            return (void *)((uintptr_t)b + BLOCK_OVERHEAD);
+
+            uint32_t want = need + BLOCK_OVERHEAD;
+            if (b->size >= want + BLOCK_OVERHEAD + HEAP_ALIGN) {
+                split_block(b, want);
+            }
+
+            used_bytes += b->size;
+
+            void *result = (void *)((uintptr_t)b + BLOCK_OVERHEAD);
+            ASSERT(((uintptr_t)result & (align - 1)) == 0);
+            ASSERT((uintptr_t)result >= heap_base + BLOCK_OVERHEAD);
+            ASSERT((uintptr_t)result < heap_end);
+
+            return result;
         }
         b = b->next;
     }
@@ -149,24 +191,25 @@ void *kmalloc(size_t size) {
     return 0;
 }
 
+void *kmalloc(size_t size) {
+    return kmalloc_internal(size, 0);
+}
+
 void *kmalloc_page(void) {
-    void *p = kmalloc(PAGE_SIZE * 2);
-    if (!p) return 0;
-    uintptr_t raw = (uintptr_t)p;
-    uintptr_t aligned = align_up(raw, PAGE_SIZE);
-    return (void *)aligned;
+    return kmalloc_internal(PAGE_SIZE, 1);
 }
 
 void kfree(void *ptr) {
     if (!ptr) return;
 
     block_t *b = block_at((uintptr_t)ptr - BLOCK_OVERHEAD);
-    if (b->free) {
-        panic("kfree: double free");
-    }
-    if ((uintptr_t)b < heap_base || (uintptr_t)b >= heap_end) {
-        panic("kfree: bad pointer");
-    }
+
+    ASSERT(b >= (block_t *)heap_base);
+    ASSERT((uintptr_t)b < heap_end);
+    ASSERT(((uintptr_t)b & (HEAP_ALIGN - 1)) == 0);
+    ASSERT(b->free == 0);
+    ASSERT(b->size >= BLOCK_OVERHEAD);
+    ASSERT(used_bytes >= b->size);
 
     used_bytes -= b->size;
     b->free = 1;

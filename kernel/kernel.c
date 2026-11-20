@@ -1,4 +1,3 @@
-#include "usermode.h"
 #include "vga.h"
 #include "gdt.h"
 #include "idt.h"
@@ -13,6 +12,8 @@
 #include "paging_asm.h"
 #include "heap.h"
 #include "syscall.h"
+#include "usermode.h"
+#include "version.h"
 
 #define TELOS_PROMPT "> "
 #define LINE_MAX 256
@@ -23,11 +24,234 @@ extern char stack_top;
 static struct multiboot_info *mb_info = 0;
 static uint32_t mb_magic = 0;
 
+static char history[KBD_HISTORY_SIZE][KBD_HISTORY_MAX];
+static int  history_count = 0;
+
 static void shell_prompt(void) {
     vga_puts(TELOS_PROMPT);
 }
 
-static void cmd_help(void) {
+static void history_push(const char *line) {
+    if (line[0] == '\0') return;
+    if (history_count > 0) {
+        int last = (history_count - 1) % KBD_HISTORY_SIZE;
+        if (strcmp(history[last], line) == 0) return;
+    }
+    int slot = history_count % KBD_HISTORY_SIZE;
+    strncpy(history[slot], line, KBD_HISTORY_MAX - 1);
+    history[slot][KBD_HISTORY_MAX - 1] = '\0';
+    history_count++;
+}
+
+static void redraw_line(const char *buf, int len, int cursor) {
+    int row = vga_get_cursor_row();
+    int col_start = (int)strlen(TELOS_PROMPT);
+
+    for (int i = 0; i < len; i++) {
+        vga_putchar_at(row, col_start + i, buf[i]);
+    }
+    for (int i = len; i < LINE_MAX; i++) {
+        int c = col_start + i;
+        if (c >= VGA_WIDTH) break;
+        vga_erase_at(row, c);
+    }
+
+    vga_set_cursor(row, col_start + cursor);
+}
+
+static void replace_line(const char *newbuf, int newlen, int *len, int *cursor, char *buf) {
+    int row = vga_get_cursor_row();
+    int col_start = (int)strlen(TELOS_PROMPT);
+    for (int i = 0; i < *len; i++) {
+        vga_erase_at(row, col_start + i);
+    }
+    for (int i = 0; i < newlen; i++) {
+        buf[i] = newbuf[i];
+        vga_putchar_at(row, col_start + i, newbuf[i]);
+    }
+    *len = newlen;
+    *cursor = newlen;
+    vga_set_cursor(row, col_start + *cursor);
+}
+
+static void do_help(void);
+static void do_clear(void);
+static void do_about(void);
+static void do_uptime(void);
+static void do_serialtest(void);
+static void do_meminfo(void);
+static void do_mmap(void);
+static void do_pagetables(void);
+static void do_pgstatus(void);
+static void do_heapinfo(void);
+static void do_heaptest(void);
+static void do_heaptest2(void);
+static void do_heapdump(void);
+static void do_syscall(void);
+static void do_usermode(void);
+static void do_panic(void);
+static void do_sysfetch(void);
+static void do_hex(const char *arg);
+static void do_sleep(const char *arg);
+
+static void handle_command(char *line) {
+    int len = (int)strlen(line);
+
+    if (len == 0) return;
+
+    if (strcmp(line, "help") == 0) {
+        do_help();
+    } else if (strcmp(line, "clear") == 0) {
+        do_clear();
+    } else if (strcmp(line, "about") == 0) {
+        do_about();
+    } else if (strcmp(line, "uptime") == 0) {
+        do_uptime();
+    } else if (strcmp(line, "serialtest") == 0) {
+        do_serialtest();
+    } else if (strcmp(line, "meminfo") == 0) {
+        do_meminfo();
+    } else if (strcmp(line, "mmap") == 0) {
+        do_mmap();
+    } else if (strcmp(line, "pagetables") == 0) {
+        do_pagetables();
+    } else if (strcmp(line, "pgstatus") == 0) {
+        do_pgstatus();
+    } else if (strcmp(line, "heapinfo") == 0) {
+        do_heapinfo();
+    } else if (strcmp(line, "heaptest") == 0) {
+        do_heaptest();
+    } else if (strcmp(line, "heaptest2") == 0) {
+        do_heaptest2();
+    } else if (strcmp(line, "heapdump") == 0) {
+        do_heapdump();
+    } else if (strcmp(line, "syscall") == 0) {
+        do_syscall();
+    } else if (strcmp(line, "usermode") == 0) {
+        do_usermode();
+    } else if (strcmp(line, "panic") == 0) {
+        do_panic();
+    } else if (strcmp(line, "sysfetch") == 0) {
+        do_sysfetch();
+    } else if (strncmp(line, "echo ", 5) == 0) {
+        kprintf("%s\n", line + 5);
+    } else if (strncmp(line, "hex ", 4) == 0) {
+        do_hex(line + 4);
+    } else if (strncmp(line, "sleep ", 6) == 0) {
+        do_sleep(line + 6);
+    } else {
+        kprintf("unknown command: %s\n", line);
+    }
+}
+
+static void shell_run(void) __attribute__((noreturn));
+static void shell_run(void) {
+    char line[LINE_MAX];
+    int len = 0;
+    int cursor = 0;
+    int browse_index = -1;
+
+    shell_prompt();
+
+    for (;;) {
+        struct kbd_event ev = keyboard_get_event();
+        if (ev.type == KBD_EV_NONE) {
+            __asm__ volatile ("hlt");
+            continue;
+        }
+
+        if (ev.type == KBD_EV_CHAR) {
+            char c = ev.ch;
+
+            if (c == '\n') {
+                vga_putchar('\n');
+                line[len] = '\0';
+                history_push(line);
+                handle_command(line);
+                len = 0;
+                cursor = 0;
+                browse_index = -1;
+                shell_prompt();
+            } else if (c == '\b') {
+                if (cursor > 0) {
+                    for (int i = cursor - 1; i < len - 1; i++) {
+                        line[i] = line[i + 1];
+                    }
+                    len--;
+                    cursor--;
+                    line[len] = '\0';
+                    redraw_line(line, len, cursor);
+                }
+            } else if (c >= 32 && c < 127 && len < LINE_MAX - 1) {
+                for (int i = len; i > cursor; i--) {
+                    line[i] = line[i - 1];
+                }
+                line[cursor] = c;
+                len++;
+                cursor++;
+                line[len] = '\0';
+                redraw_line(line, len, cursor);
+            }
+        } else if (ev.type == KBD_EV_UP) {
+            if (history_count > 0) {
+                if (browse_index < 0) browse_index = history_count - 1;
+                else if (browse_index > 0) browse_index--;
+                int slot = browse_index % KBD_HISTORY_SIZE;
+                replace_line(history[slot], (int)strlen(history[slot]),
+                             &len, &cursor, line);
+            }
+        } else if (ev.type == KBD_EV_DOWN) {
+            if (browse_index >= 0) {
+                browse_index++;
+                if (browse_index >= history_count) {
+                    browse_index = -1;
+                    replace_line("", 0, &len, &cursor, line);
+                } else {
+                    int slot = browse_index % KBD_HISTORY_SIZE;
+                    replace_line(history[slot], (int)strlen(history[slot]),
+                                 &len, &cursor, line);
+                }
+            }
+        } else if (ev.type == KBD_EV_LEFT) {
+            if (cursor > 0) {
+                cursor--;
+                vga_set_cursor(vga_get_cursor_row(),
+                               (int)strlen(TELOS_PROMPT) + cursor);
+            }
+        } else if (ev.type == KBD_EV_RIGHT) {
+            if (cursor < len) {
+                cursor++;
+                vga_set_cursor(vga_get_cursor_row(),
+                               (int)strlen(TELOS_PROMPT) + cursor);
+            }
+        } else if (ev.type == KBD_EV_HOME) {
+            cursor = 0;
+            vga_set_cursor(vga_get_cursor_row(),
+                           (int)strlen(TELOS_PROMPT));
+        } else if (ev.type == KBD_EV_END) {
+            cursor = len;
+            vga_set_cursor(vga_get_cursor_row(),
+                           (int)strlen(TELOS_PROMPT) + cursor);
+        } else if (ev.type == KBD_EV_DELETE) {
+            if (cursor < len) {
+                for (int i = cursor; i < len - 1; i++) {
+                    line[i] = line[i + 1];
+                }
+                len--;
+                line[len] = '\0';
+                redraw_line(line, len, cursor);
+            }
+        } else if (ev.type == KBD_EV_ESC) {
+            vga_putchar('\n');
+            len = 0;
+            cursor = 0;
+            browse_index = -1;
+            shell_prompt();
+        }
+    }
+}
+
+static void do_help(void) {
     kprintf("commands:\n");
     kprintf("  help           show this message\n");
     kprintf("  clear          clear the screen\n");
@@ -45,12 +269,262 @@ static void cmd_help(void) {
     kprintf("  heaptest2      allocate, free, reuse, coalesce\n");
     kprintf("  heapdump       walk every heap block\n");
     kprintf("  syscall        trigger int 0x80 test\n");
+    kprintf("  usermode       jump to ring 3 and back\n");
+    kprintf("  sysfetch       system info + ASCII art\n");
     kprintf("  panic          trigger a test panic\n");
     kprintf("  about          show version info\n");
-    kprintf("  usermode       jump to ring 3 and back\n");
+    kprintf("\n  line editing: arrows, home/end, delete, up/down history\n");
 }
 
-static void cmd_hex(const char *arg) {
+static void do_clear(void) { vga_clear(); }
+
+static void do_about(void) {
+    char buf[64];
+    sprintf(buf, "%s %s", TELOS_NAME, TELOS_VERSION);
+    kprintf("%s\n", buf);
+    kprintf("kernel:  telos.bin\n");
+    kprintf("build:   -m32 -ffreestanding\n");
+}
+
+static void do_uptime(void) {
+    kprintf("uptime: %u ms (%u ticks @ %u Hz)\n",
+            timer_uptime_ms(), timer_ticks(), TIMER_HZ);
+}
+
+static void do_serialtest(void) {
+    serial_puts("[serial test] hello from telOS\n");
+    serial_puts("[serial test] hex: ");
+    serial_puthex(0xdeadbeef);
+    serial_puts("\n");
+    kprintf("wrote to serial\n");
+}
+
+static void do_meminfo(void) {
+    if (!mb_info) { kprintf("no multiboot info\n"); return; }
+
+    kprintf("multiboot magic: 0x%x\n", mb_magic);
+
+    if (mb_info->flags & MULTIBOOT_INFO_MEMORY) {
+        kprintf("lower memory:   %u KB\n", mb_info->mem_lower);
+        kprintf("upper memory:   %u KB\n", mb_info->mem_upper);
+        kprintf("total usable:   %u KB\n", mb_info->mem_lower + mb_info->mem_upper);
+    }
+
+    if (mb_info->flags & MULTIBOOT_INFO_MMAP) {
+        kprintf("mmap entries:   ~%u (at 0x%x)\n",
+                mb_info->mmap_length / 24, mb_info->mmap_addr);
+    }
+
+    kprintf("kernel ends at: 0x%x\n", (unsigned int)(size_t)&__kernel_end);
+}
+
+static void do_mmap(void) {
+    if (!mb_info || !(mb_info->flags & MULTIBOOT_INFO_MMAP)) {
+        kprintf("no memory map\n"); return;
+    }
+
+    uint32_t addr = mb_info->mmap_addr;
+    uint32_t end = addr + mb_info->mmap_length;
+    int i = 0;
+    kprintf("idx  base             length           type\n");
+
+    while (addr < end) {
+        struct multiboot_mmap_entry *e = (struct multiboot_mmap_entry *)addr;
+        const char *kind;
+        switch (e->type) {
+        case MULTIBOOT_MEMORY_AVAILABLE:        kind = "usable";     break;
+        case MULTIBOOT_MEMORY_RESERVED:         kind = "reserved";   break;
+        case MULTIBOOT_MEMORY_ACPI_RECLAIMABLE: kind = "acpi-recl";  break;
+        case MULTIBOOT_MEMORY_NVS:              kind = "nvs";        break;
+        case MULTIBOOT_MEMORY_BADRAM:           kind = "badram";     break;
+        default:                                kind = "unknown";    break;
+        }
+        kprintf("%3d  0x%08x%08x  0x%08x%08x  %s\n",
+                i,
+                (uint32_t)(e->addr >> 32), (uint32_t)(e->addr & 0xFFFFFFFFu),
+                (uint32_t)(e->len >> 32),  (uint32_t)(e->len & 0xFFFFFFFFu),
+                kind);
+        addr += e->size + 4;
+        if (++i > 64) { kprintf("... (truncated)\n"); break; }
+    }
+}
+
+static void do_pagetables(void) {
+    kprintf("identity map size: 0x%x bytes (%u MiB)\n",
+            IDENTITY_MAP_SIZE, IDENTITY_MAP_SIZE / (1024 * 1024));
+    kprintf("page directory:    0x%x\n", paging_directory_phys());
+    kprintf("kernel ends at:    0x%x\n", (unsigned int)(size_t)&__kernel_end);
+    kprintf("self test:         %s\n", paging_self_test() ? "PASS" : "FAIL");
+    for (uint32_t i = 0; i < PAGE_TABLES; i++) {
+        uint32_t entry = ((page_dir_entry_t *)paging_directory_phys())[i];
+        kprintf("  [%u] = 0x%x\n", i, entry);
+    }
+}
+
+static void do_pgstatus(void) {
+    uint32_t cr0 = paging_get_cr0();
+    kprintf("CR0:  0x%x\n", cr0);
+    kprintf("PG:   %s\n", (cr0 & 0x80000000u) ? "on" : "off");
+    kprintf("PE:   %s\n", (cr0 & 0x1u) ? "on" : "off");
+    kprintf("CR3:  0x%x\n", paging_get_cr3());
+}
+
+static void do_heapinfo(void) {
+    kprintf("heap base:     0x%x\n", (uint32_t)(uintptr_t)heap_start());
+    kprintf("heap current:  0x%x\n", (uint32_t)(uintptr_t)heap_current());
+    kprintf("used:          %u bytes\n", (uint32_t)heap_used());
+    kprintf("capacity:      %u bytes\n", (uint32_t)heap_capacity());
+}
+
+static void do_heaptest(void) {
+    const unsigned int sizes[] = { 16, 32, 64, 128, 1000, 4096 };
+    const unsigned int count = sizeof(sizes) / sizeof(sizes[0]);
+    unsigned char *blocks[6];
+    unsigned int i;
+
+    kprintf("allocating %u blocks...\n", count);
+    for (i = 0; i < count; i++) {
+        blocks[i] = (unsigned char *)kmalloc(sizes[i]);
+        if (!blocks[i]) { kprintf("  FAIL: kmalloc(%u) returned NULL\n", sizes[i]); return; }
+        if ((uintptr_t)blocks[i] & (HEAP_ALIGN - 1)) {
+            kprintf("  FAIL: misaligned pointer 0x%x\n", (uint32_t)(uintptr_t)blocks[i]);
+            return;
+        }
+        kprintf("  [%u] %5u bytes -> 0x%x\n", i, sizes[i], (uint32_t)(uintptr_t)blocks[i]);
+    }
+    for (i = 0; i < count; i++) {
+        for (unsigned int j = 0; j < sizes[i]; j++)
+            blocks[i][j] = (unsigned char)(i * 31 + j);
+    }
+    for (i = 0; i < count; i++) {
+        for (unsigned int j = 0; j < sizes[i]; j++) {
+            if (blocks[i][j] != (unsigned char)(i * 31 + j)) {
+                kprintf("  FAIL: corruption in block %u at byte %u\n", i, j);
+                return;
+            }
+        }
+    }
+    kprintf("all %u blocks verified. used: %u bytes\n",
+            count, (uint32_t)heap_used());
+}
+
+static void do_heaptest2(void) {
+    unsigned char *a = (unsigned char *)kmalloc(256);
+    unsigned char *b = (unsigned char *)kmalloc(512);
+    unsigned char *c = (unsigned char *)kmalloc(256);
+    if (!a || !b || !c) { kprintf("  FAIL: allocation\n"); return; }
+    kprintf("  A=0x%x B=0x%x C=0x%x\n",
+            (uint32_t)(uintptr_t)a, (uint32_t)(uintptr_t)b, (uint32_t)(uintptr_t)c);
+    for (unsigned int i = 0; i < 256; i++) a[i] = (unsigned char)i;
+    for (unsigned int i = 0; i < 512; i++) b[i] = (unsigned char)(i * 3);
+    for (unsigned int i = 0; i < 256; i++) c[i] = (unsigned char)(i * 7);
+    kfree(b);
+    unsigned char *d = (unsigned char *)kmalloc(512);
+    if (!d) { kprintf("  FAIL: D allocation\n"); return; }
+    kprintf("  D=0x%x\n", (uint32_t)(uintptr_t)d);
+    for (unsigned int i = 0; i < 512; i++) d[i] = (unsigned char)(i * 5);
+    for (unsigned int i = 0; i < 256; i++)
+        if (a[i] != (unsigned char)i) { kprintf("  FAIL: A corrupted\n"); return; }
+    for (unsigned int i = 0; i < 256; i++)
+        if (c[i] != (unsigned char)(i * 7)) { kprintf("  FAIL: C corrupted\n"); return; }
+    kfree(a); kfree(c); kfree(d);
+    unsigned char *big = (unsigned char *)kmalloc(1024);
+    if (!big) { kprintf("  FAIL: big allocation\n"); return; }
+    kprintf("  big=0x%x\n", (uint32_t)(uintptr_t)big);
+    for (unsigned int i = 0; i < 1024; i++) big[i] = (unsigned char)(i ^ 0xAA);
+    for (unsigned int i = 0; i < 1024; i++)
+        if (big[i] != (unsigned char)(i ^ 0xAA)) { kprintf("  FAIL: big corrupted\n"); return; }
+    kfree(big);
+    kprintf("heaptest2: PASS\nused after test: %u bytes\n", (uint32_t)heap_used());
+}
+
+static void do_heapdump(void) { heap_dump(); }
+
+static void do_syscall(void) {
+    kprintf("triggering int 0x80 with SYS_WRITE...\n");
+    uint32_t r = syscall_test();
+    kprintf("returned: %u\n", r);
+}
+
+static void do_usermode(void) {
+    kprintf("entering user mode...\n");
+    usermode_run();
+    kprintf("returned from user mode\n");
+}
+
+static void do_panic(void) { panic("panic triggered by shell"); }
+
+static void do_sysfetch(void) {
+    static const char *art[] = {
+        "._____. ._____.",
+        "| ._. | | ._. |",
+        "| !_| |_|_|_! |",
+        "!___| |_______!",
+        ".___|_|_| |___.",
+        "| ._____| |_. |",
+        "| !_! | | !_! |",
+        "!_____! !_____!",
+    };
+    int art_lines = 8;
+    int art_width = 15;
+
+    uint32_t ms = timer_uptime_ms();
+    uint32_t secs = ms / 1000;
+    uint32_t mins = secs / 60;
+    uint32_t hours = mins / 60;
+
+    char uptime_buf[32];
+    snprintf(uptime_buf, sizeof(uptime_buf), "%uh %um %us",
+             hours, mins % 60, secs % 60);
+
+    uint32_t heap_cap = (uint32_t)heap_capacity();
+    uint32_t heap_used_b = (uint32_t)heap_used();
+    uint32_t heap_pct = heap_cap ? (heap_used_b * 100) / heap_cap : 0;
+
+    char heap_buf[64];
+    snprintf(heap_buf, sizeof(heap_buf), "%u KiB / %u KiB (%u%%)",
+             heap_used_b / 1024, heap_cap / 1024, heap_pct);
+
+    char mem_buf[64];
+    if (mb_info && (mb_info->flags & MULTIBOOT_INFO_MEMORY)) {
+        snprintf(mem_buf, sizeof(mem_buf), "%u MiB",
+                 (mb_info->mem_lower + mb_info->mem_upper) / 1024);
+    } else {
+        snprintf(mem_buf, sizeof(mem_buf), "unknown");
+    }
+
+    const char *labels[5] = {
+        "OS", "Uptime", "Memory", "Heap", "Privilege"
+    };
+
+    char values[5][80];
+    snprintf(values[0], sizeof(values[0]), "%s %s", TELOS_NAME, TELOS_VERSION);
+    snprintf(values[1], sizeof(values[1]), "%s", uptime_buf);
+    snprintf(values[2], sizeof(values[2]), "%s", mem_buf);
+    snprintf(values[3], sizeof(values[3]), "%s", heap_buf);
+    snprintf(values[4], sizeof(values[4]), "ring 0 / ring 3");
+
+    int info_lines = 5;
+    int info_offset = (art_lines - info_lines) / 2;
+
+    for (int i = 0; i < art_lines; i++) {
+        vga_puts(art[i]);
+        vga_puts("  ");
+
+        int info_i = i - info_offset;
+        if (info_i >= 0 && info_i < info_lines) {
+            vga_puts(labels[info_i]);
+            vga_puts(": ");
+            vga_puts(values[info_i]);
+        }
+
+        if (i < art_lines - 1) vga_putchar('\n');
+    }
+
+    vga_putchar('\n');
+}
+
+static void do_hex(const char *arg) {
     unsigned int v = 0;
     int any = 0;
     while (*arg == ' ') arg++;
@@ -59,20 +533,11 @@ static void cmd_hex(const char *arg) {
         arg++;
         any = 1;
     }
-    if (!any) {
-        kprintf("usage: hex <decimal>\n");
-        return;
-    }
+    if (!any) { kprintf("usage: hex <decimal>\n"); return; }
     kprintf("0x%x\n", v);
 }
 
-static void cmd_about(void) {
-    kprintf("telOS v0.7a\n");
-    kprintf("kernel:  telos.bin\n");
-    kprintf("build:   -m32 -ffreestanding\n");
-}
-
-static void cmd_sleep(const char *arg) {
+static void do_sleep(const char *arg) {
     unsigned int ms = 0;
     int any = 0;
     while (*arg == ' ') arg++;
@@ -90,336 +555,6 @@ static void cmd_sleep(const char *arg) {
     kprintf("done. uptime: %u ms\n", timer_uptime_ms());
 }
 
-static void cmd_uptime(void) {
-    uint32_t ms = timer_uptime_ms();
-    kprintf("uptime: %u ms (%u ticks @ %u Hz)\n",
-            ms, timer_ticks(), TIMER_HZ);
-}
-
-static void cmd_serialtest(void) {
-    serial_puts("[serial test] hello from telOS\n");
-    serial_puts("[serial test] hex: ");
-    serial_puthex(0xdeadbeef);
-    serial_puts("\n");
-    kprintf("wrote to serial\n");
-}
-
-static void cmd_meminfo(void) {
-    if (!mb_info) {
-        kprintf("no multiboot info\n");
-        return;
-    }
-
-    kprintf("multiboot magic: 0x%x\n", mb_magic);
-
-    if (mb_info->flags & MULTIBOOT_INFO_MEMORY) {
-        uint32_t lower_kb = mb_info->mem_lower;
-        uint32_t upper_kb = mb_info->mem_upper;
-        kprintf("lower memory:   %u KB (%u MB)\n",
-                lower_kb, lower_kb / 1024);
-        kprintf("upper memory:   %u KB (%u MB)\n",
-                upper_kb, upper_kb / 1024);
-        kprintf("total usable:   %u KB\n", lower_kb + upper_kb);
-    } else {
-        kprintf("mem_lower/mem_upper not provided\n");
-    }
-
-    if (mb_info->flags & MULTIBOOT_INFO_MMAP) {
-        kprintf("mmap entries:   ~%u (at 0x%x)\n",
-                mb_info->mmap_length / 24, mb_info->mmap_addr);
-    } else {
-        kprintf("no memory map provided\n");
-    }
-
-    kprintf("kernel ends at: 0x%x\n", (unsigned int)(size_t)&__kernel_end);
-}
-
-static void cmd_mmap(void) {
-    if (!mb_info || !(mb_info->flags & MULTIBOOT_INFO_MMAP)) {
-        kprintf("no memory map\n");
-        return;
-    }
-
-    uint32_t addr = mb_info->mmap_addr;
-    uint32_t end = addr + mb_info->mmap_length;
-    int i = 0;
-
-    kprintf("idx  base             length           type\n");
-
-    while (addr < end) {
-        struct multiboot_mmap_entry *e =
-            (struct multiboot_mmap_entry *)addr;
-
-        const char *kind;
-        switch (e->type) {
-        case MULTIBOOT_MEMORY_AVAILABLE:        kind = "usable";     break;
-        case MULTIBOOT_MEMORY_RESERVED:         kind = "reserved";   break;
-        case MULTIBOOT_MEMORY_ACPI_RECLAIMABLE: kind = "acpi-recl";  break;
-        case MULTIBOOT_MEMORY_NVS:              kind = "nvs";        break;
-        case MULTIBOOT_MEMORY_BADRAM:           kind = "badram";     break;
-        default:                                kind = "unknown";    break;
-        }
-
-        kprintf("%3d  0x%08x%08x  0x%08x%08x  %s\n",
-                i,
-                (uint32_t)(e->addr >> 32), (uint32_t)(e->addr & 0xFFFFFFFFu),
-                (uint32_t)(e->len >> 32),  (uint32_t)(e->len & 0xFFFFFFFFu),
-                kind);
-
-        addr += e->size + 4;
-        i++;
-
-        if (i > 64) {
-            kprintf("... (truncated)\n");
-            break;
-        }
-    }
-}
-
-static void cmd_pagetables(void) {
-    uint32_t dir_phys = paging_directory_phys();
-    uint32_t self_test = (uint32_t)paging_self_test();
-
-    kprintf("identity map size: 0x%x bytes (%u MiB)\n",
-            IDENTITY_MAP_SIZE, IDENTITY_MAP_SIZE / (1024 * 1024));
-    kprintf("page directory:    0x%x\n", dir_phys);
-    kprintf("kernel ends at:    0x%x\n",
-            (unsigned int)(size_t)&__kernel_end);
-    kprintf("self test:         %s\n", self_test ? "PASS" : "FAIL");
-
-    kprintf("\npage dir entries 0..%u:\n", PAGE_TABLES - 1);
-
-    for (uint32_t i = 0; i < PAGE_TABLES; i++) {
-        uint32_t entry = ((page_dir_entry_t *)dir_phys)[i];
-        kprintf("  [%u] = 0x%x\n", i, entry);
-    }
-}
-
-static void cmd_pgstatus(void) {
-    uint32_t cr0 = paging_get_cr0();
-
-    kprintf("CR0:  0x%x\n", cr0);
-    kprintf("PG:   %s\n", (cr0 & 0x80000000u) ? "on" : "off");
-    kprintf("PE:   %s\n", (cr0 & 0x1u) ? "on" : "off");
-    kprintf("CR3:  0x%x\n", paging_get_cr3());
-    kprintf("dir phys: 0x%x\n", paging_directory_phys());
-    kprintf("self test: %s\n", paging_self_test() ? "PASS" : "FAIL");
-}
-
-static void cmd_heapinfo(void) {
-    kprintf("heap base:     0x%x\n", (uint32_t)(uintptr_t)heap_start());
-    kprintf("heap current:  0x%x\n", (uint32_t)(uintptr_t)heap_current());
-    kprintf("used:          %u bytes\n", (uint32_t)heap_used());
-    kprintf("capacity:      %u bytes\n", (uint32_t)heap_capacity());
-}
-
-static void cmd_heaptest(void) {
-    const unsigned int sizes[] = { 16, 32, 64, 128, 1000, 4096 };
-    const unsigned int count = sizeof(sizes) / sizeof(sizes[0]);
-
-    unsigned char *blocks[6];
-    unsigned int i;
-
-    kprintf("allocating %u blocks...\n", count);
-
-    for (i = 0; i < count; i++) {
-        blocks[i] = (unsigned char *)kmalloc(sizes[i]);
-        if (!blocks[i]) {
-            kprintf("  FAIL: kmalloc(%u) returned NULL\n", sizes[i]);
-            return;
-        }
-        if ((uintptr_t)blocks[i] & (HEAP_ALIGN - 1)) {
-            kprintf("  FAIL: misaligned pointer 0x%x\n",
-                    (uint32_t)(uintptr_t)blocks[i]);
-            return;
-        }
-        kprintf("  [%u] %5u bytes -> 0x%x\n",
-                i, sizes[i], (uint32_t)(uintptr_t)blocks[i]);
-    }
-
-    kprintf("writing + verifying pattern...\n");
-
-    for (i = 0; i < count; i++) {
-        unsigned int j;
-        for (j = 0; j < sizes[i]; j++) {
-            blocks[i][j] = (unsigned char)(i * 31 + j);
-        }
-    }
-
-    for (i = 0; i < count; i++) {
-        unsigned int j;
-        for (j = 0; j < sizes[i]; j++) {
-            if (blocks[i][j] != (unsigned char)(i * 31 + j)) {
-                kprintf("  FAIL: corruption in block %u at byte %u\n", i, j);
-                return;
-            }
-        }
-    }
-
-    kprintf("all %u blocks verified. used: %u bytes\n",
-            count, (uint32_t)heap_used());
-}
-
-static void cmd_heaptest2(void) {
-    kprintf("step 1: allocate A,B,C\n");
-    unsigned char *a = (unsigned char *)kmalloc(256);
-    unsigned char *b = (unsigned char *)kmalloc(512);
-    unsigned char *c = (unsigned char *)kmalloc(256);
-    if (!a || !b || !c) { kprintf("  FAIL: allocation\n"); return; }
-    kprintf("  A=0x%x B=0x%x C=0x%x\n",
-            (uint32_t)(uintptr_t)a,
-            (uint32_t)(uintptr_t)b,
-            (uint32_t)(uintptr_t)c);
-
-    kprintf("step 2: write patterns\n");
-    for (unsigned int i = 0; i < 256; i++) a[i] = (unsigned char)i;
-    for (unsigned int i = 0; i < 512; i++) b[i] = (unsigned char)(i * 3);
-    for (unsigned int i = 0; i < 256; i++) c[i] = (unsigned char)(i * 7);
-
-    kprintf("step 3: free B (middle)\n");
-    kfree(b);
-
-    kprintf("step 4: allocate D of same size\n");
-    unsigned char *d = (unsigned char *)kmalloc(512);
-    if (!d) { kprintf("  FAIL: D allocation\n"); return; }
-    kprintf("  D=0x%x (expect reuse of B's slot)\n", (uint32_t)(uintptr_t)d);
-
-    for (unsigned int i = 0; i < 512; i++) d[i] = (unsigned char)(i * 5);
-
-    kprintf("step 5: verify A and C untouched\n");
-    for (unsigned int i = 0; i < 256; i++) {
-        if (a[i] != (unsigned char)i) { kprintf("  FAIL: A corrupted at %u\n", i); return; }
-    }
-    for (unsigned int i = 0; i < 256; i++) {
-        if (c[i] != (unsigned char)(i * 7)) { kprintf("  FAIL: C corrupted at %u\n", i); return; }
-    }
-    kprintf("  A and C intact\n");
-
-    kprintf("step 6: free A, C, D\n");
-    kfree(a);
-    kfree(c);
-    kfree(d);
-
-    kprintf("step 7: allocate large block (coalescing test)\n");
-    unsigned char *big = (unsigned char *)kmalloc(1024);
-    if (!big) { kprintf("  FAIL: big allocation\n"); return; }
-    kprintf("  big=0x%x (expect coalesced region)\n", (uint32_t)(uintptr_t)big);
-
-    for (unsigned int i = 0; i < 1024; i++) big[i] = (unsigned char)(i ^ 0xAA);
-    for (unsigned int i = 0; i < 1024; i++) {
-        if (big[i] != (unsigned char)(i ^ 0xAA)) { kprintf("  FAIL: big corrupted at %u\n", i); return; }
-    }
-
-    kfree(big);
-
-    kprintf("heaptest2: PASS\n");
-    kprintf("used after test: %u bytes\n", (uint32_t)heap_used());
-}
-
-static void cmd_heapdump(void) {
-    heap_dump();
-}
-
-static void cmd_syscall(void) {
-    kprintf("triggering int 0x80 with SYS_WRITE...\n");
-    uint32_t r = syscall_test();
-    kprintf("returned: %u\n", r);
-}
-
-static void cmd_panic(void) {
-    panic("panic triggered by shell");
-}
-
-static void cmd_usermode(void) {
-    kprintf("entering user mode...\n");
-    usermode_run();
-    kprintf("returned from user mode\n");
-}
-
-static void handle_command(char *line) {
-    int len = (int)strlen(line);
-
-    if (len == 0) return;
-
-    if (strcmp(line, "help") == 0) {
-        cmd_help();
-    } else if (strcmp(line, "clear") == 0) {
-        vga_clear();
-    } else if (strcmp(line, "about") == 0) {
-        cmd_about();
-    } else if (strcmp(line, "uptime") == 0) {
-        cmd_uptime();
-    } else if (strcmp(line, "serialtest") == 0) {
-        cmd_serialtest();
-    } else if (strcmp(line, "meminfo") == 0) {
-        cmd_meminfo();
-    } else if (strcmp(line, "mmap") == 0) {
-        cmd_mmap();
-    } else if (strcmp(line, "pagetables") == 0) {
-        cmd_pagetables();
-    } else if (strcmp(line, "pgstatus") == 0) {
-        cmd_pgstatus();
-    } else if (strcmp(line, "heapinfo") == 0) {
-        cmd_heapinfo();
-    } else if (strcmp(line, "heaptest") == 0) {
-        cmd_heaptest();
-    } else if (strcmp(line, "heaptest2") == 0) {
-        cmd_heaptest2();
-    } else if (strcmp(line, "heapdump") == 0) {
-        cmd_heapdump();
-    } else if (strcmp(line, "syscall") == 0) {
-        cmd_syscall();
-    } else if (strcmp(line, "panic") == 0) {
-        cmd_panic();
-    } else if (strncmp(line, "echo ", 5) == 0) {
-        kprintf("%s\n", line + 5);
-    } else if (strncmp(line, "hex ", 4) == 0) {
-        cmd_hex(line + 4);
-    } else if (strncmp(line, "sleep ", 6) == 0) {
-        cmd_sleep(line + 6);
-    } else if (strcmp(line, "usermode") == 0) {
-        cmd_usermode();
-    } else {
-        kprintf("unknown command: %s\n", line);
-    }
-}
-
-static void shell_run(void) __attribute__((noreturn));
-static void shell_run(void) {
-    char line[LINE_MAX];
-    int len = 0;
-
-    shell_prompt();
-
-    for (;;) {
-        int c = keyboard_getchar();
-        if (c < 0) {
-            __asm__ volatile ("hlt");
-            continue;
-        }
-
-        if (c == '\n') {
-            vga_putchar('\n');
-            line[len] = '\0';
-            handle_command(line);
-            len = 0;
-            shell_prompt();
-        } else if (c == '\b') {
-            if (len > 0) {
-                len--;
-                vga_backspace();
-            }
-        } else if (c == 27) {
-            vga_putchar('\n');
-            len = 0;
-            shell_prompt();
-        } else if (c >= 32 && c < 127 && len < LINE_MAX - 1) {
-            line[len++] = (char)c;
-            vga_putchar((char)c);
-        }
-    }
-}
-
 void kernel_main(uint32_t magic, uint32_t info_addr) {
     mb_magic = magic;
     mb_info = (struct multiboot_info *)info_addr;
@@ -432,7 +567,7 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
     timer_init();
     paging_init();
 
-    kprintf("telOS v0.7a\n");
+    kprintf("%s %s\n", TELOS_NAME, TELOS_VERSION);
     kprintf("==========\n\n");
 
     if (magic != MULTIBOOT_BOOTLOADER_MAGIC) {
@@ -441,22 +576,11 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
         kprintf("multiboot OK, info at 0x%x\n", info_addr);
     }
 
-    serial_puts("[boot] about to enable paging\n");
     paging_enable_now();
-    serial_puts("[boot] survived paging flip\n");
-
-    if (!paging_enabled()) {
-        panic("paging_enable_now returned but PG is clear");
-    }
-
-    if (!paging_self_test()) {
-        panic("paging self test failed after enable");
-    }
+    if (!paging_enabled()) panic("PG is clear");
 
     kprintf("paging ON, dir at 0x%x\n", paging_directory_phys());
-
     heap_init();
-
     syscall_init();
     gdt_set_kernel_stack((uint32_t)&stack_top);
 
@@ -464,7 +588,7 @@ void kernel_main(uint32_t magic, uint32_t info_addr) {
             (uint32_t)(uintptr_t)heap_start(),
             (uint32_t)heap_capacity());
 
-    kprintf("Welcome to telOS. Type 'help'.\n\n");
+    kprintf("Welcome to %s. Type 'help'.\n\n", TELOS_NAME);
 
     shell_run();
 }
