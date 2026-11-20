@@ -466,7 +466,7 @@ static void do_sysfetch(void) {
         "!_____! !_____!",
     };
     int art_lines = 8;
-    int art_width = 15;
+    /* int art_width = 15;  -- Not rlly necessary*/
 
     uint32_t ms = timer_uptime_ms();
     uint32_t secs = ms / 1000;

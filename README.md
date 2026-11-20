@@ -11,7 +11,7 @@ It's bare metal.
 [![Boot](https://img.shields.io/badge/boot-Multiboot%20%2F%20GRUB-green?style=flat-square)](#)
 [![Memory](https://img.shields.io/badge/memory-paging%20%2B%20heap-purple?style=flat-square)](#)
 [![Privilege](https://img.shields.io/badge/privilege-ring%200%20%2F%20ring%203-orange?style=flat-square)](#)
-[![Status](https://img.shields.io/badge/status-v0.7b%20ring%203-brightgreen?style=flat-square)](#)
+[![Status](https://img.shields.io/badge/status-v0.8--pre2-brightgreen?style=flat-square)](#)
 
 </div>
 
@@ -22,6 +22,10 @@ It's bare metal.
 `telOS` is a hobby operating system. It's small enough to read end-to-end in an afternoon, but complete enough to boot on real hardware (or QEMU), print to the screen, handle keyboard input, keep time, manage memory with paging and a heap allocator, and run code in **ring 3** — real user mode, separated from the kernel by hardware privilege.
 
 It is **not** a Unix clone, **not** a teaching OS with a framework, and **not** a Linux distro. Every line of code in `kernel/` and `libk/` was written for this project. There is no standard library, no runtime, and no host operating system underneath.
+
+```html
+<img src="docs/screenshot.png" width="720" alt="telOS shell with sysfetch">
+```
 
 ## Features
 
@@ -34,7 +38,7 @@ It is **not** a Unix clone, **not** a teaching OS with a framework, and **not** 
 
 ### Interrupts & I/O
 - **PIT** at 100 Hz (IRQ0) — real uptime, `sleep`, benchmarks
-- **Keyboard** (IRQ1) — scancode decoding, ring-buffered
+- **Keyboard** (IRQ1) — scancode decoding, ring-buffered, arrow/Home/End/Delete events
 - **Serial** (COM1, 38400 8N1) — every `kprintf` mirrored to UART
 - **Exception handlers** for `#UD` (6), `#GP` (13), `#PF` (14) — print `cr2`/`err`/`cs:eip` to serial instead of triple-faulting
 
@@ -42,12 +46,13 @@ It is **not** a Unix clone, **not** a teaching OS with a framework, and **not** 
 - **Paging enabled** (`CR0.PG = 1`), 16 MiB identity-mapped
 - 4 static page tables for the identity region, dynamically allocated page tables for user mappings
 - **`kmalloc` / `kfree`** — free-list allocator with block headers, splitting, and coalescing
-- **`kmalloc_page`** — page-aligned variant for allocations that must land on 4 KiB boundaries
+- **`kmalloc_page`** — page-aligned variant using a slack-block split, reusable on subsequent calls
 - Kernel exports `__kernel_end` from the linker for the heap base
+- **`ASSERT`** on heap, paging, and syscall invariants — no silent corruption
 
 ### Privilege & Syscalls
 - **Ring 3 execution** — user code runs at CPL=3, kernel at CPL=0
-- **TSS** loaded via `ltr 0x28`, `esp0` points to a dedicated IRQ stack during user mode
+- **TSS** loaded via `ltr 0x28`, `esp0` points to a dedicated 8 KiB IRQ stack during user mode
 - **`int 0x80`** — DPL=3 interrupt gate with a register-based ABI
   - `eax` = syscall number, `ebx`/`ecx`/`edx` = args, return in `eax`
   - `SYS_WRITE` (1) — write a NUL-terminated string to console
@@ -57,12 +62,19 @@ It is **not** a Unix clone, **not** a teaching OS with a framework, and **not** 
 
 ### Runtime
 - `kprintf` — `%d %i %u %x %X %s %c %p %%`, field width, `0`-pad, `-` left-align
-- `ksnprintf` — same formatter, into a caller-provided buffer
+- `ksnprintf` / `kvsnprintf` / `sprintf` / `snprintf` — with correct `va_list` forwarding
 - `libk/string` — `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `memcpy`, `memset`, `memcmp`
 - `libk/ctype` — `isdigit`, `isalpha`, `isspace`, `isupper`, `islower`, `toupper`, `tolower`
+- `version.h` — one `#define` for the version, used in the boot banner, `about`, and `sysfetch`
 
 ### Shell
-17 commands. Line editing with backspace and ESC-to-cancel. Hardware cursor tracking. Full ring buffer between IRQ handler and shell loop. Heap and paging diagnostics (`heapinfo`, `heapdump`, `heaptest`, `heaptest2`, `pagetables`, `pgstatus`, `meminfo`, `mmap`). User-mode trigger (`usermode`).
+19 commands. **Full line editor**: arrows, Home/End, Delete, backspace at cursor, **up/down history** (last 16 commands). Hardware cursor tracking. Full ring buffer between IRQ handler and shell loop.
+
+- `help`, `clear`, `about`, `sysfetch`, `uptime`, `serialtest`
+- `meminfo`, `mmap`, `pagetables`, `pgstatus`
+- `heapinfo`, `heaptest`, `heaptest2`, `heapdump`
+- `syscall`, `usermode`, `panic`
+- `echo <text>`, `hex <n>`, `sleep <ms>`
 
 ### Safety
 - `panic(msg)` — prints to VGA **and** serial, disables interrupts, halts
@@ -123,13 +135,14 @@ sudo dd if=telos.iso of=/dev/sdX bs=4M status=progress && sync
 ├── boot/
 │   └── boot.S          Multiboot header, _start, GDT/IDT/IRQ/syscall stubs
 ├── kernel/
-│   ├── kernel.c        kernel_main + shell + commands
+│   ├── kernel.c        kernel_main + shell + line editor + commands
+│   ├── version.h       TELOS_NAME / TELOS_VERSION
 │   ├── gdt.c           global descriptor table + TSS
 │   ├── idt.c           interrupt descriptor table + PIC remap + exception handlers
-│   ├── keyboard.c      scancode → ring buffer
+│   ├── keyboard.c      scancode → event stream + ring buffer
 │   ├── timer.c         PIT, ticks, sleep
 │   ├── serial.c        COM1 driver
-│   ├── vga.c           text mode 3 driver + hardware cursor
+│   ├── vga.c           text mode 3 driver + hardware cursor + cursor helpers
 │   ├── paging.c        page directory, page tables, self test, user mapping
 │   ├── paging_asm.h    CR0/CR3 inline-asm helpers
 │   ├── heap.c          free-list kmalloc/kfree, kmalloc_page
@@ -145,7 +158,7 @@ sudo dd if=telos.iso of=/dev/sdX bs=4M status=progress && sync
 ├── libk/
 │   ├── string.c/.h     freestanding string functions
 │   ├── ctype.h         character classification
-│   └── stdio.c/.h      kprintf / ksnprintf
+│   └── stdio.c/.h      kprintf / ksnprintf / kvsnprintf / sprintf / snprintf
 ├── linker.ld           links kernel at 1 MiB, exports __kernel_end
 └── Makefile
 ```
@@ -158,11 +171,12 @@ Pressing a key travels this path:
 
 ```
 keyboard → IRQ1 → irq1_c_handler → keyboard_handle_scancode
-        → ring buffer → keyboard_getchar → shell_run → handle_command
+        → kbd event ring buffer → keyboard_get_event
+        → shell_run line editor → handle_command
         → kprintf → vga_putchar + serial_putc
 ```
 
-The IRQ handler does the *minimum*: read the scancode, translate it, push it into a ring buffer, send EOI. All display work happens in the shell loop, at kernel-thread context, with interrupts handled safely. This is the right structure, and it's the one you'll want to preserve when you add scheduling.
+The IRQ handler does the *minimum*: read the scancode, translate it, push the decoded event into a ring buffer, send EOI. All editing (cursor movement, history, character insertion) happens in the shell loop, at kernel-thread context. This is the right structure, and it's the one to preserve when multitasking arrives — the shell will become a task, and its main loop will look the same.
 
 ## How `usermode` crosses the privilege boundary
 
@@ -206,7 +220,9 @@ Each version is a milestone and a git tag.
 | **v0.6a** | Bump allocator, `heaptest` |
 | **v0.6b** | Free-list allocator with splitting + coalescing |
 | **v0.7a** | TSS, user segments, `int 0x80` gate (ring 0 only) |
-| **v0.7b** | **Ring 3 execution, real syscalls, clean ring transitions** |
+| **v0.7b** | Ring 3 execution, real syscalls, clean ring transitions |
+| **v0.8-pre** | `version.h`, `sprintf`/`snprintf`, proper `kmalloc_page` |
+| **v0.8-pre2** | **Line editing, ASSERT coverage, `sprintf` fix, `sysfetch`** |
 | **v0.8** | Round-robin scheduler, kernel threads |
 | **v0.9** | RAMFS |
 | **v1.0** | Something that runs a program |
@@ -229,6 +245,10 @@ Each version is a milestone and a git tag.
 [x] TSS + ring 3
 [x] System calls
 [x] Exception handlers with diagnostic output
+[x] Line editing + command history
+[x] ASSERT on invariants
+[x] `version.h` + `sprintf` family
+[x] `sysfetch` + logo
 [ ] More syscalls (read, mmap, yield, getpid)
 [ ] User program loader from disk
 [ ] Multitasking (kernel threads, then user processes)
@@ -244,19 +264,21 @@ Deliberate choices. Future-me should not undo these.
 
 - **Serial mirror is default-on.** `kprintf` writes to VGA *and* COM1. When the MMU breaks and VGA dies, serial is the only way to see what happened. This is why it's wired into the formatter rather than bolted on later.
 
-- **The IRQ handlers are tiny.** They do the minimum work and defer everything else. `irq1_c_handler` pushes a scancode and returns; the shell does the echoing. This is the correct design and gets more important once scheduling arrives.
+- **The IRQ handlers are tiny.** They do the minimum work and defer everything else. `irq1_c_handler` pushes a decoded event and returns; the shell does the editing. This is the correct design and gets more important once scheduling arrives.
 
-- **Paging is identity-mapped for kernel space.** `0x00000000`–`0x00FFFFFF` map to themselves. Non-identity mappings start at `0x40000000` for user code and `0x40100000` for user stack. The identity map means a kernel virtual address is also its physical address, which is the simplest possible setup that still proves the MMU works.
+- **Paging is identity-mapped for kernel space.** `0x00000000`–`0x00FFFFFF` map to themselves. Non-identity mappings start at `0x40000000` for user code and `0x40100000` for user stack.
 
-- **User pages are mapped with `PAGE_USER` on both PDE and PTE.** If either is missing, ring 3 page-faults on the first instruction fetch. The `paging_map_user` debug output prints `dir_idx`/`tab_idx` so you can verify the mapping.
+- **User pages are mapped with `PAGE_USER` on both PDE and PTE.** If either is missing, ring 3 page-faults on the first instruction fetch.
 
-- **The `P` canary.** When `CR0.PG` is flipped, the very next asm block does `out 'P', 0x3F8`. If you see `P` on serial, the CPU survived the flip. If you don't, it triple-faulted. One byte of diagnostic can save hours of guessing.
+- **The `P` canary.** When `CR0.PG` is flipped, the very next asm block does `out 'P', 0x3F8`. If you see `P` on serial, the CPU survived the flip. One byte of diagnostic can save hours of guessing.
 
-- **`switch_to_kernel` uses `mov esp; jmp eip`, not `iret`.** Same-ring transitions should not use `iret` — `iret` pops 5 values for cross-ring but only 3 for same-ring, and getting this wrong leaves the stack 8 bytes off. `mov esp; jmp eip` is unambiguous.
+- **`switch_to_kernel` uses `mov esp; jmp eip`, not `iret`.** Same-ring transitions should not use `iret` — `iret` pops 5 values for cross-ring but only 3 for same-ring, and getting this wrong leaves the stack 8 bytes off.
 
-- **Interrupt gates clear `IF`.** `int 0x80` uses `0xEE` (interrupt gate), which clears `IF` on entry. `switch_to_kernel` doesn't restore it, so `usermode_run` does `sti` after `switch_to_user` returns. Without this, the keyboard is dead after `usermode` — the IRQs never fire.
+- **Interrupt gates clear `IF`.** `int 0x80` uses `0xEE` (interrupt gate), which clears `IF` on entry. `switch_to_kernel` doesn't restore it, so `usermode_run` does `sti` after `switch_to_user` returns.
 
-- **Alignment guarantees must be explicit.** `kmalloc` returns 16-byte aligned; `kmalloc_page` returns 4 KiB aligned. `paging_map_user` requires 4 KiB alignment on both virt and phys. Using `kmalloc` where `kmalloc_page` is required silently corrupts page tables. When you add an alignment-aware helper, grep for every call site that should use it.
+- **Alignment guarantees must be explicit.** `kmalloc` returns 16-byte aligned; `kmalloc_page` returns 4 KiB aligned. `paging_map_user` requires 4 KiB alignment on both virt and phys. Using `kmalloc` where `kmalloc_page` is required silently corrupts page tables.
+
+- **`va_list` is never forwarded through `...`.** `ksnprintf` and `sprintf` both call `kvsnprintf(char*, size_t, const char*, va_list)`, which has a **named** `va_list` parameter. Passing a `va_list` through `...` is undefined behaviour and produces garbage at runtime. This bit us once; never again.
 
 - **No libc, no stdarg.h.** `kprintf` uses `__builtin_va_list` and `libk` provides everything else. The entire toolchain dependency is `gcc -ffreestanding -nostdlib -lgcc`.
 
@@ -269,6 +291,17 @@ MIT. See `LICENSE`.
 ---
 
 <div align="center">
+
+```text
+._____. ._____.
+| ._. | | ._. |
+| !_| |_|_|_! |
+!___| |_______!
+.___|_|_| |___.
+| ._____| |_. |
+| !_! | | !_! |
+!_____! !_____!
+```
 
 *stop scrolling man*
 
