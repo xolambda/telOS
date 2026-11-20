@@ -147,7 +147,7 @@ The IRQ handler does the *minimum*: read the scancode, translate it, push it int
 
 ## Versioning
 
-Each version is a milestone and gets a git tag.
+Each version is a milestone.
 
 | Version | Milestone |
 |---------|-----------|
@@ -212,6 +212,6 @@ MIT. See `LICENSE`.
 
 <div align="center">
 
-*Built one interrupt at a time.*
+*stop scrolling man*
 
 </div>
