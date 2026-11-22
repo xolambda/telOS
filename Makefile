@@ -1,7 +1,12 @@
 CC      = gcc
 AS      = gcc
-CFLAGS  = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra -fno-pic -fno-pie \
-          -g -Ilibk -Ikernel
+CFLAGS = -m32 -std=gnu99 -ffreestanding -O2 -Wall -Wextra \
+         -fno-pic -fno-pie -fno-stack-protector \
+         -mno-sse -mno-sse2 -mno-mmx -mno-3dnow -mno-avx \
+         -msoft-float \
+         -mpreferred-stack-boundary=2 -mincoming-stack-boundary=2 \
+         -g -Ilibk -Ikernel
+
 LDFLAGS = -m32 -T linker.ld -ffreestanding -O2 -nostdlib -no-pie -lgcc
 
 OBJS = boot/boot.o \

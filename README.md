@@ -98,6 +98,12 @@ sudo pacman -S base-devel gcc-multilib grub xorriso qemu-system-x86 mtools
 
 **macOS** — install `i386-elf-gcc` and `qemu` via Homebrew, then set `CC = i386-elf-gcc` and `AS = i386-elf-gcc --target=i386` in the Makefile.
 
+
+**FreeBSD**  
+
+```sh/tcsh
+sudo pkg install grub2-pcbsd gcc xorriso qemu mtools
+```
 ---
 
 ## Build & Run
